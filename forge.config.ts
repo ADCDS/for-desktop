@@ -1,5 +1,6 @@
 import { MakerAppX } from "@electron-forge/maker-appx";
 import { MakerDeb } from "@electron-forge/maker-deb";
+import { MakerDMG } from "@electron-forge/maker-dmg";
 import { MakerFlatpak } from "@electron-forge/maker-flatpak";
 import { MakerFlatpakOptionsConfig } from "@electron-forge/maker-flatpak/dist/Config";
 import { MakerSquirrel } from "@electron-forge/maker-squirrel";
@@ -40,6 +41,9 @@ const makers: ForgeConfig["makers"] = [
     copyright: "Copyright (C) 2025 Revolt Platforms LTD",
   }),
   new MakerZIP({}),
+  // darwin only: appdmg needs macOS `hdiutil`, so this can only run on a Mac
+  // (or a macos GitHub runner) -- it cannot be cross-compiled from Linux.
+  new MakerDMG({ overwrite: true }, ["darwin"]),
   new MakerFlatpak({
     options: {
       id: "chat.stoat.StoatDesktop",
@@ -130,13 +134,20 @@ const config: ForgeConfig = {
       process.platform === "darwin"
         ? `${ASSET_DIR}/icon.icon`
         : `${ASSET_DIR}/icon`,
-    osxSign: {
-      optionsForFile: () => {
-        return {
-          entitlements: "./entitlements.plist",
-        };
-      },
-    },
+    // With UNSIGNED=1 (used by the release workflow) sign ad-hoc instead of
+    // with a Developer ID. There is no certificate in CI, and a genuinely
+    // unsigned arm64 .app will not launch on Apple Silicon at all -- ad-hoc is
+    // the closest thing to "unsigned" that still runs. Users must still clear
+    // quarantine: xattr -dr com.apple.quarantine /Applications/Stoat.app
+    osxSign: process.env.UNSIGNED
+      ? { identity: "-" }
+      : {
+          optionsForFile: () => {
+            return {
+              entitlements: "./entitlements.plist",
+            };
+          },
+        },
 
     // extraResource: [
     //   // include all the asset files

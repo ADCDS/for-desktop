@@ -1,0 +1,87 @@
+name: Release Artifacts (macOS + Windows)
+
+# Builds the artifacts that cannot be cross-compiled from Linux and attaches
+# them to an existing release:
+#   - macOS .dmg  (needs hdiutil, macOS only)
+#   - Windows .exe Squirrel installer (needs wine+mono off-Windows)
+# Linux .zip/.deb are built locally and uploaded when the release is created.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to attach artifacts to"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS arm64 (dmg)
+            os: macos-latest
+            platform: darwin
+            arch: arm64
+            targets: dmg
+          - label: macOS x64 (dmg)
+            os: macos-13
+            platform: darwin
+            arch: x64
+            targets: dmg
+          - label: Windows x64 (installer)
+            os: windows-latest
+            platform: win32
+            arch: x64
+            targets: squirrel
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Checkout assets
+        run: git -c submodule."assets".update=checkout submodule update --init assets
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Make distributables
+        env:
+          # ad-hoc sign on macOS; no Developer ID certificate in CI
+          UNSIGNED: "1"
+        run: >
+          pnpm exec electron-forge make
+          --platform=${{ matrix.platform }}
+          --arch=${{ matrix.arch }}
+          --targets=${{ matrix.targets }}
+
+      - name: Upload to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # rename so the arch is visible in the release asset list
+          find out/make -type f \( -name '*.dmg' -o -name '*.exe' \) -print0 |
+            while IFS= read -r -d '' f; do
+              ext="${f##*.}"
+              gh release upload "${{ inputs.tag }}" \
+                "$f#Stoat-${{ matrix.platform }}-${{ matrix.arch }}.$ext" --clobber
+            done
