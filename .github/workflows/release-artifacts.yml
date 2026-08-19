@@ -34,8 +34,12 @@ jobs:
             platform: darwin
             arch: arm64
             targets: dmg
+          # Intel build runs on the arm64 runner: the macos-13 Intel runners
+          # are retired and jobs targeting them queue forever. @electron/packager
+          # just downloads the darwin-x64 Electron, and codesign can ad-hoc sign
+          # x64 binaries from Apple Silicon, so cross-arch packaging is fine.
           - label: macOS x64 (dmg)
-            os: macos-13
+            os: macos-latest
             platform: darwin
             arch: x64
             targets: dmg
