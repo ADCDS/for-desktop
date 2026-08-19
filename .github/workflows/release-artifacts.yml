@@ -13,6 +13,10 @@ on:
         description: "Existing release tag to attach artifacts to"
         required: true
         type: string
+      ref:
+        description: "Commit/branch to build (defaults to the tag)"
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -45,7 +49,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ inputs.ref || inputs.tag }}
 
       - name: Checkout assets
         run: git -c submodule."assets".update=checkout submodule update --init assets

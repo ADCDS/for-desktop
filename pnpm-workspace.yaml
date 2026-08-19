@@ -3,6 +3,10 @@ allowBuilds:
   electron: true
   electron-winstaller: true
   esbuild: true
+  # appdmg's native deps, needed by the dmg maker on macOS runners. Both
+  # compile from source via node-gyp -- no prebuilt binaries are downloaded.
+  fs-xattr: true
+  macos-alias: true
   # Upstream sets this to true. Kept false in this fork: node-pipewire's
   # install script runs node-pre-gyp, which downloads a prebuilt .node from
   # github.com/kakxem/node-pipewire/releases with no npm provenance
