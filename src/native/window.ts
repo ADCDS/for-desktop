@@ -250,7 +250,11 @@ export function createMainWindow() {
           );
         });
     },
-    { useSystemPicker: true },
+    // macOS: Electron's useSystemPicker wrapper short-circuits the handler
+    // with a video-only response (lib/browser/api/session.ts) — audio:
+    // "loopback" never runs and screen-share audio is silently dropped.
+    // Use our own picker there so the CATap loopback path works.
+    { useSystemPicker: process.platform !== "darwin" },
   );
 
   // push world events to the window
