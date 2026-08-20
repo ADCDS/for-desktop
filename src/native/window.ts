@@ -20,10 +20,20 @@ import { updateTrayMenu } from "./tray";
 export let mainWindow: BrowserWindow;
 
 // currently in-use build
+//
+// This fork defaults to the self-hosted instance rather than stoat.chat, so
+// the app works when launched normally from the Dock/Finder/Spotlight with no
+// wrapper script or arguments. --force-server still overrides it.
+//
+// getSwitchValue returns "" when the flag is given in the space-separated form
+// (`--force-server URL`), which Chromium does not parse as a value. Treating
+// that as "not provided" avoids `new URL("")` throwing at startup.
+const forcedServer = app.commandLine.hasSwitch("force-server")
+  ? app.commandLine.getSwitchValue("force-server")
+  : "";
+
 export const BUILD_URL = new URL(
-  app.commandLine.hasSwitch("force-server")
-    ? app.commandLine.getSwitchValue("force-server")
-    : /*MAIN_WINDOW_VITE_DEV_SERVER_URL ??*/ "https://stoat.chat/app",
+  forcedServer || /*MAIN_WINDOW_VITE_DEV_SERVER_URL ??*/ "https://stoat.adriel.eu/",
 );
 
 // internal window state
