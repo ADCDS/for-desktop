@@ -90,3 +90,7 @@ typings/
 
 # Electron-Forge
 out/
+
+# Python bytecode (ptt helper)
+__pycache__/
+*.pyc

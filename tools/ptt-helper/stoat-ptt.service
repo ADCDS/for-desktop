@@ -1,0 +1,34 @@
+[Unit]
+Description=Stoat push-to-talk key forwarder
+Documentation=https://github.com/ADCDS/for-desktop
+After=systemd-user-sessions.service
+
+[Service]
+Type=simple
+# Watches a single keycode on the keyboard event devices and forwards its
+# press/release over a unix socket. Every other key is discarded on read.
+# stdlib-only python so it works under ProtectHome=yes (nvm lives in /home)
+ExecStart=/usr/bin/python3 /usr/local/lib/stoat-ptt/stoat-ptt-helper.py
+Environment=STOAT_PTT_SOCKET=/run/stoat-ptt.sock
+# Set by install.sh to the desktop user, so only they can open the socket.
+Environment=STOAT_PTT_UID=__UID__
+Restart=on-failure
+RestartSec=3
+
+# Needs root only to read /dev/input; drop everything else.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+RuntimeDirectory=stoat-ptt
+
+[Install]
+WantedBy=multi-user.target

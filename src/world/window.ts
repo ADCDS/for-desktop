@@ -34,4 +34,16 @@ contextBridge.exposeInMainWorld("native", {
     ipcRenderer.send("screenPickerCallback", idx, audio),
 
   isWayland: () => ipcRenderer.invoke("getIsWayland"),
+
+  pushToTalk: {
+    // Resolves false when no global key source is available (helper not
+    // installed, permission missing); the renderer then falls back to
+    // focused-only push-to-talk.
+    setBinding: (code: string) =>
+      ipcRenderer.invoke("setPushToTalkBinding", code) as Promise<boolean>,
+    onChange: (handler: (pressed: boolean) => void) => {
+      ipcRenderer.removeAllListeners("pushToTalk");
+      ipcRenderer.on("pushToTalk", (_, pressed: boolean) => handler(pressed));
+    },
+  },
 });
