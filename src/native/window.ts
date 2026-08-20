@@ -195,6 +195,18 @@ export function createMainWindow() {
   });
 
   // Create display media request handler
+  //
+  // INVARIANT: the audio value below must stay exactly "loopback".
+  // Electron only upgrades it to Chromium's `loopbackWithoutChrome` device --
+  // the one that builds the CoreAudio tap with
+  // `initStereoGlobalTapButExcludeProcesses:` -- when the id is exactly
+  // `kLoopbackInputDeviceId`, i.e. "loopback", AND the page passed the
+  // `restrictOwnAudio: true` constraint to getDisplayMedia (for-web does).
+  // See electron_browser_context.cc, present since v43.4.0 (#52455).
+  // Switching this to "loopbackWithMute" silently disables that exclusion:
+  // no error, no warning -- listeners simply start hearing their own voices
+  // echoed back inside the shared system audio. Upstream has already
+  // flip-flopped here once (#236), so this is a live footgun.
   session.defaultSession.setDisplayMediaRequestHandler(
     (request, callback) => {
       desktopCapturer
