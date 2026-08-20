@@ -13,6 +13,10 @@ allowBuilds:
   # attestation. Cost of false: no screen-share audio on Wayland.
   node-pipewire: false
   register-scheme@https://codeload.github.com/devsnek/node-register-scheme/tar.gz/e7cc9a63a1f512565da44cb57316d9fb10750e17: true
+  # node-gyp-build: loads prebuilds bundled INSIDE the npm tarball, so they are
+  # covered by the lockfile hash and pnpm's supply-chain check -- unlike
+  # node-pipewire, which fetched an unattested binary from a GitHub release.
+  uiohook-napi: true
   utf-8-validate: true
 
 nodeLinker: hoisted

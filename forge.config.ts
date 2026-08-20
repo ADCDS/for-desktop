@@ -158,7 +158,29 @@ const config: ForgeConfig = {
   makers,
   hooks: {
     // Copy the node-pipewire dist to the app on linux
-    packageAfterCopy: async (_config, buildPath, _version, platform) => {
+    packageAfterCopy: async (_config, buildPath, _version, platform, arch) => {
+      // uiohook-napi provides global push-to-talk on Windows and macOS. It has
+      // to be copied by hand for the same reason node-pipewire does: packager's
+      // dependency walk does not follow pnpm's layout, so it gets pruned. Only
+      // the prebuild for the target platform is copied -- shipping all seven
+      // would add ~1MB of binaries for architectures this build cannot run on.
+      const uiohook = "node_modules/uiohook-napi";
+      const prebuild = `${platform}-${arch}`;
+      if (fs.existsSync(`${uiohook}/prebuilds/${prebuild}`)) {
+        for (const file of ["package.json", "dist"]) {
+          fs.cpSync(
+            `${uiohook}/${file}`,
+            path.join(buildPath, uiohook, file),
+            { recursive: true },
+          );
+        }
+        fs.cpSync(
+          `${uiohook}/prebuilds/${prebuild}`,
+          path.join(buildPath, uiohook, "prebuilds", prebuild),
+          { recursive: true },
+        );
+      }
+
       if (platform === "linux") {
         // Copy only the files we need to run the code, which is dist, LICENSE, and package.json
         fs.cpSync(
