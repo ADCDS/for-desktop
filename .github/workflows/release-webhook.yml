@@ -1,5 +1,8 @@
-# DO NOT EDIT DIRECTLY IN REPOSITORY
-# Managed in Terraform templates
+# Upstream header says "DO NOT EDIT DIRECTLY IN REPOSITORY / Managed in
+# Terraform templates". Edited anyway in this fork: upstream's Terraform also
+# provisions the STOAT_WEBHOOK_UPDATES_URL secret, which a fork does not get,
+# so every release failed here with curl exiting on an empty URL. Now it skips
+# when unconfigured, and still posts if the secret is ever added.
 
 name: Release Webhook
 
@@ -19,8 +22,31 @@ jobs:
           TAG_NAME: ${{ github.event.release.tag_name }}
           REPOSITORY: ${{ github.repository }}
           WEBHOOK_URL: ${{ secrets.STOAT_WEBHOOK_UPDATES_URL }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+
+          # The secrets context is not available in a job-level `if`, so the
+          # guard has to live here in the step.
+          if [ -z "${WEBHOOK_URL:-}" ]; then
+            echo "STOAT_WEBHOOK_UPDATES_URL is not set; skipping notification."
+            exit 0
+          fi
+
+          # workflow_dispatch has no release payload, so fall back to the latest
+          # published tag rather than posting a URL ending in "/releases/tag/".
+          if [ -z "${TAG_NAME:-}" ]; then
+            TAG_NAME="$(gh release view --repo "$REPOSITORY" --json tagName --jq .tagName)"
+          fi
+
           RELEASE_URL="https://github.com/${REPOSITORY}/releases/tag/${TAG_NAME}"
-          curl -X POST "$WEBHOOK_URL" \
-            -H "Content-Type: application/json" \
-            -d "{\"content\": \"$RELEASE_URL\"}"
+
+          # jq builds the payload so a tag containing quotes or backslashes
+          # cannot produce malformed JSON.
+          jq -nc --arg content "$RELEASE_URL" '{content: $content}' \
+            | curl --fail --silent --show-error \
+                -X POST "$WEBHOOK_URL" \
+                -H "Content-Type: application/json" \
+                --data @-
+
+          echo "Notified: $RELEASE_URL"
