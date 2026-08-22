@@ -179,6 +179,16 @@ const config: ForgeConfig = {
           path.join(buildPath, uiohook, "prebuilds", prebuild),
           { recursive: true },
         );
+        // uiohook's entrypoint is `require('node-gyp-build')(__dirname/..)`,
+        // so the loader has to come along or the require throws
+        // MODULE_NOT_FOUND and push-to-talk silently degrades to focused-only.
+        // realpath because pnpm may leave this as a symlink into .pnpm, which
+        // cpSync would copy as a dangling link.
+        fs.cpSync(
+          fs.realpathSync("node_modules/node-gyp-build"),
+          path.join(buildPath, "node_modules/node-gyp-build"),
+          { recursive: true },
+        );
       }
 
       if (platform === "linux") {
