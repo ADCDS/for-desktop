@@ -25,6 +25,9 @@ jobs:
   build:
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
+    # a mis-set keychain partition list makes codesign hang on an invisible GUI
+    # prompt rather than fail, so cap the job well under the 6h default
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -70,15 +73,127 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Make distributables
+      # Imports the self-signed signing certificate into a throwaway keychain so
+      # codesign can use it non-interactively. Optional: with no certificate
+      # configured the build still signs, ad-hoc, which is enough to produce a
+      # launchable bundle. The certificate only buys a *stable* signing identity
+      # so macOS keeps the user's Accessibility grant across updates -- see the
+      # osxSign comment in forge.config.ts.
+      #
+      # The guard lives inside the step because `secrets` is not available to a
+      # job-level `if` (same reason as release-webhook.yml).
+      - name: Import signing certificate
+        if: matrix.platform == 'darwin'
         env:
-          # ad-hoc sign on macOS; no Developer ID certificate in CI
-          UNSIGNED: "1"
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          # Must match the leaf CN used by tools/gen-signing-cert.sh.
+          LEAF_CN: "Stoat Fork Code Signing"
+        run: |
+          set -euo pipefail
+          if [ -z "${MACOS_CERT_P12_BASE64:-}" ]; then
+            echo "No MACOS_CERT_P12_BASE64 secret; signing ad-hoc."
+            echo "Grants will not survive this update -- see issue #1."
+            exit 0
+          fi
+
+          KEYCHAIN="$RUNNER_TEMP/stoat-signing.keychain-db"
+          KEYCHAIN_PW="$(uuidgen)"
+          echo "::add-mask::$KEYCHAIN_PW"
+          P12="$RUNNER_TEMP/cert.p12"
+          ROOT="$RUNNER_TEMP/root.pem"
+
+          security create-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          # outlast any plausible build; a keychain that re-locks mid-sign makes
+          # codesign start failing partway through the bundle
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+
+          printf '%s' "$MACOS_CERT_P12_BASE64" | base64 --decode > "$P12"
+          security import "$P12" -k "$KEYCHAIN" -P "$MACOS_CERT_PASSWORD" \
+            -f pkcs12 -T /usr/bin/codesign -T /usr/bin/security
+
+          # macOS gates private-key access behind an ACL partition list; without
+          # this codesign raises an "allow access" dialog that hangs a headless
+          # runner until the job times out
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PW" "$KEYCHAIN" >/dev/null
+
+          # prepend, don't replace: dropping the login keychain from the search
+          # list breaks unrelated tooling on the runner
+          security list-keychains -d user -s "$KEYCHAIN" \
+            $(security list-keychains -d user | tr -d '"')
+
+          # `security find-identity -v` hides anything flagged
+          # CSSMERR_TP_NOT_TRUSTED, which a freshly imported self-signed cert
+          # always is. Trusting our own root on this ephemeral runner keeps the
+          # identity discoverable. End-user Macs need no such trust: signature
+          # checking uses implicit anchors, so the embedded self-signed root
+          # validates on a machine that has never seen it.
+          security find-certificate -c "$LEAF_CN" -p "$KEYCHAIN" > "$ROOT" || true
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign \
+            -k /Library/Keychains/System.keychain "$ROOT" \
+            || echo "::warning::add-trusted-cert failed; identityValidation is off so signing can still proceed"
+
+          if ! security find-certificate -c "$LEAF_CN" "$KEYCHAIN" >/dev/null 2>&1; then
+            echo "::error::leaf certificate '$LEAF_CN' not found after import"
+            exit 1
+          fi
+          # informational: empty here means a trust problem, but signing still
+          # works because forge sets identityValidation:false
+          security find-identity -v -p codesigning "$KEYCHAIN" || true
+
+          {
+            echo "MACOS_SIGN_IDENTITY=$LEAF_CN"
+            echo "MACOS_SIGN_KEYCHAIN=$KEYCHAIN"
+            echo "MACOS_SIGN_CN=$LEAF_CN"
+          } >> "$GITHUB_ENV"
+
+          rm -f "$P12" "$ROOT"
+
+      - name: Make distributables
         run: >
           pnpm exec electron-forge make
           --platform=${{ matrix.platform }}
           --arch=${{ matrix.arch }}
           --targets=${{ matrix.targets }}
+
+      # Guards the exact defect behind issue #1: @electron/packager downgrades a
+      # signing failure to a warning (createSignOpts defaults continueOnError to
+      # true), so a bundle with no resource seal sailed through as a green build
+      # and then died on Apple Silicon with "damaged and can't be opened".
+      #
+      # Checked twice: the packaged .app, then the copy inside the .dmg. appdmg
+      # is a separate chance to lose the seal, and the .dmg is what users get.
+      - name: Verify macOS signature
+        if: matrix.platform == 'darwin'
+        run: |
+          set -euo pipefail
+          ./.github/scripts/verify-macos-signing.sh \
+            "out/Stoat-darwin-${{ matrix.arch }}/Stoat.app"
+
+          DMG="$(find out/make -type f -name '*.dmg' -print -quit)"
+          [ -n "$DMG" ] || { echo "::error::no dmg produced"; exit 1; }
+          MNT="$(mktemp -d)"
+          trap 'hdiutil detach "$MNT" -force >/dev/null 2>&1 || true' EXIT
+          hdiutil attach "$DMG" -mountpoint "$MNT" -nobrowse -readonly -quiet
+          ./.github/scripts/verify-macos-signing.sh "$MNT/Stoat.app"
+
+      # A broken signature or a library-validation failure shows up on Apple
+      # Silicon as an immediate SIGKILL, which no static check catches.
+      - name: Launch smoke test
+        if: matrix.platform == 'darwin' && matrix.arch == 'arm64'
+        run: |
+          set +e
+          timeout 25 "out/Stoat-darwin-arm64/Stoat.app/Contents/MacOS/stoat-desktop" \
+            --no-sandbox >/dev/null 2>&1
+          rc=$?
+          # 124 = our own timeout, i.e. it stayed up. That is the pass case.
+          if [ "$rc" = 137 ]; then
+            echo "::error::app was SIGKILLed on launch (signature or entitlements)"
+            exit 1
+          fi
+          echo "launch exit code: $rc"
 
       - name: Upload to release
         shell: bash
@@ -93,3 +208,11 @@ jobs:
               gh release upload "${{ inputs.tag }}" \
                 "$f#Stoat-${{ matrix.platform }}-${{ matrix.arch }}.$ext" --clobber
             done
+
+      # Runs even when the build fails, so a signing key is never left behind on
+      # a runner. Best effort throughout: the keychain may not exist.
+      - name: Remove signing keychain
+        if: always() && matrix.platform == 'darwin'
+        run: |
+          security delete-keychain "$RUNNER_TEMP/stoat-signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/root.pem"

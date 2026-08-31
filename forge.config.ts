@@ -134,20 +134,61 @@ const config: ForgeConfig = {
       process.platform === "darwin"
         ? `${ASSET_DIR}/icon.icon`
         : `${ASSET_DIR}/icon`,
-    // With UNSIGNED=1 (used by the release workflow) sign ad-hoc instead of
-    // with a Developer ID. There is no certificate in CI, and a genuinely
-    // unsigned arm64 .app will not launch on Apple Silicon at all -- ad-hoc is
-    // the closest thing to "unsigned" that still runs. Users must still clear
-    // quarantine: xattr -dr com.apple.quarantine /Applications/Stoat.app
-    osxSign: process.env.UNSIGNED
-      ? { identity: "-" }
-      : {
-          optionsForFile: () => {
-            return {
-              entitlements: "./entitlements.plist",
-            };
-          },
-        },
+    // macOS signing. There is no Developer ID and there will not be one, so
+    // notarization is impossible and Gatekeeper always wants a one-time
+    // "Open Anyway" (or xattr -dr com.apple.quarantine).
+    //
+    // What has to hold regardless is that the bundle gets a real *resource
+    // seal*. Up to v1.5.3-adriel.1 it did not: identity "-" went to
+    // @electron/osx-sign with identityValidation left on, `security
+    // find-identity -v` matched nothing, osx-sign threw "No identity found for
+    // signing", and @electron/packager swallowed it -- createSignOpts defaults
+    // continueOnError to true, so signAppIfSpecified downgrades the throw to a
+    // warning that forge's spinner hides. Every macOS build since shipped with
+    // just the linker's ad-hoc signature and no CodeResources, which arm64
+    // rejects outright as "damaged". See issue #1.
+    //
+    // MACOS_SIGN_IDENTITY, when set, names a self-signed cert in the runner's
+    // keychain. It buys no Gatekeeper trust -- only a *stable* designated
+    // requirement, so TCC keeps the user's Accessibility grant (global
+    // push-to-talk) across updates instead of orphaning it every release the
+    // way an ad-hoc cdhash does. Unset, we still sign ad-hoc: that fixes
+    // "damaged" but not the permission churn.
+    //
+    // This must stay truthy on darwin. With no osxSign config, FusesPlugin
+    // flips resetAdHocDarwinSignature and signs only the main executable,
+    // leaving the bundle unsealed all over again.
+    osxSign: (process.platform === "darwin"
+      ? {
+          identity: process.env.MACOS_SIGN_IDENTITY || "-",
+          // skip `security find-identity -v`, which filters out both "-" and a
+          // self-signed cert that is not (yet) trusted on the build machine
+          identityValidation: false,
+          ...(process.env.MACOS_SIGN_KEYCHAIN
+            ? { keychain: process.env.MACOS_SIGN_KEYCHAIN }
+            : {}),
+          // packager reads this but omits it from its exported OsxSignOptions
+          // type, hence the cast. Without it a signing failure is a warning.
+          continueOnError: false,
+          // osx-sign would otherwise try to derive an Apple Team ID from the
+          // certificate to synthesise entitlements. Ours has none.
+          preAutoEntitlements: false,
+          optionsForFile: () => ({
+            entitlements: "./entitlements.plist",
+            // osx-sign defaults this to true (sign.js getDefaultOptionsForFile).
+            // Hardened runtime is only a notarization prerequisite, and turning
+            // it on without com.apple.security.cs.allow-jit and
+            // allow-unsigned-executable-memory -- neither of which is in
+            // entitlements.plist -- makes V8 SIGKILL at launch. If a Developer
+            // ID ever appears, add those entitlements *before* flipping this.
+            hardenedRuntime: false,
+            // Unset means osx-sign passes a bare `--timestamp`, which demands a
+            // round trip to timestamp.apple.com for every one of ~200 signed
+            // files and fails outright for an ad-hoc identity.
+            timestamp: "none",
+          }),
+        }
+      : undefined) as ForgeConfig["packagerConfig"]["osxSign"],
 
     // extraResource: [
     //   // include all the asset files
