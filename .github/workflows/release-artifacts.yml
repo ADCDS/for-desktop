@@ -193,28 +193,42 @@ jobs:
           ./.github/scripts/verify-macos-signing.sh "$MNT/Stoat.app"
 
       # AMFI kills a binary whose signature it rejects before any of the app's
-      # own code runs, and no static check catches that. `--version` exercises
-      # dyld and the signature check without needing a window server.
+      # own code runs, and no static check catches that. So: start it, and see
+      # whether it survives. Surviving is the pass condition -- the runner has
+      # no usable window server, and the fuses mean there is no --version style
+      # early exit, so the process is expected to still be up when we kill it.
       #
-      # Deliberately narrow: only a kill signal fails the job. The runner has no
-      # real GUI session, so an ordinary non-zero exit says nothing useful.
-      # (Do not reach for `timeout` here -- macOS has no GNU coreutils, and it
-      # exits 127 "command not found", which silently passes.)
+      # Rolled by hand rather than with `timeout`: macOS ships no GNU coreutils,
+      # and `timeout` there exits 127 "command not found", which quietly passes.
       - name: Launch smoke test
         if: matrix.platform == 'darwin' && matrix.arch == 'arm64'
         run: |
           set +e
-          "out/Stoat-darwin-arm64/Stoat.app/Contents/MacOS/stoat-desktop" \
-            --version >/dev/null 2>&1
-          rc=$?
-          echo "exit code: $rc"
-          # 137 = SIGKILL (AMFI), 134 = SIGABRT
-          if [ "$rc" = 137 ] || [ "$rc" = 134 ]; then
-            echo "::error::binary was killed on launch -- signature rejected by AMFI"
+          BIN="out/Stoat-darwin-arm64/Stoat.app/Contents/MacOS/stoat-desktop"
+          if [ ! -x "$BIN" ]; then
+            echo "::error::$BIN is missing or not executable"
             exit 1
           fi
-          if [ "$rc" = 127 ]; then
-            echo "::error::executable not found; the smoke test is not testing anything"
+
+          "$BIN" --no-sandbox >/dev/null 2>&1 &
+          pid=$!
+          for _ in $(seq 1 15); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 1
+          done
+
+          if kill -0 "$pid" 2>/dev/null; then
+            kill -9 "$pid" 2>/dev/null
+            wait "$pid" 2>/dev/null
+            echo "still running after 15s -- AMFI accepted the signature"
+            exit 0
+          fi
+
+          wait "$pid"; rc=$?
+          echo "exited early, code $rc"
+          # 137 = SIGKILL (AMFI refusing the signature), 134 = SIGABRT
+          if [ "$rc" = 137 ] || [ "$rc" = 134 ]; then
+            echo "::error::binary was killed on launch -- signature rejected"
             exit 1
           fi
 
