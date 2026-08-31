@@ -192,21 +192,31 @@ jobs:
           hdiutil attach "$DMG" -mountpoint "$MNT" -nobrowse -readonly -quiet
           ./.github/scripts/verify-macos-signing.sh "$MNT/Stoat.app"
 
-      # A broken signature or a library-validation failure shows up on Apple
-      # Silicon as an immediate SIGKILL, which no static check catches.
+      # AMFI kills a binary whose signature it rejects before any of the app's
+      # own code runs, and no static check catches that. `--version` exercises
+      # dyld and the signature check without needing a window server.
+      #
+      # Deliberately narrow: only a kill signal fails the job. The runner has no
+      # real GUI session, so an ordinary non-zero exit says nothing useful.
+      # (Do not reach for `timeout` here -- macOS has no GNU coreutils, and it
+      # exits 127 "command not found", which silently passes.)
       - name: Launch smoke test
         if: matrix.platform == 'darwin' && matrix.arch == 'arm64'
         run: |
           set +e
-          timeout 25 "out/Stoat-darwin-arm64/Stoat.app/Contents/MacOS/stoat-desktop" \
-            --no-sandbox >/dev/null 2>&1
+          "out/Stoat-darwin-arm64/Stoat.app/Contents/MacOS/stoat-desktop" \
+            --version >/dev/null 2>&1
           rc=$?
-          # 124 = our own timeout, i.e. it stayed up. That is the pass case.
-          if [ "$rc" = 137 ]; then
-            echo "::error::app was SIGKILLed on launch (signature or entitlements)"
+          echo "exit code: $rc"
+          # 137 = SIGKILL (AMFI), 134 = SIGABRT
+          if [ "$rc" = 137 ] || [ "$rc" = 134 ]; then
+            echo "::error::binary was killed on launch -- signature rejected by AMFI"
             exit 1
           fi
-          echo "launch exit code: $rc"
+          if [ "$rc" = 127 ]; then
+            echo "::error::executable not found; the smoke test is not testing anything"
+            exit 1
+          fi
 
       - name: Upload to release
         shell: bash
