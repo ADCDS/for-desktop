@@ -87,8 +87,9 @@ jobs:
         env:
           MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
           MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
-          # Must match the leaf CN used by tools/gen-signing-cert.sh.
+          # Must match the CNs used by tools/gen-signing-cert.sh.
           LEAF_CN: "Stoat Fork Code Signing"
+          ROOT_CN: "Stoat Fork Signing Root"
         run: |
           set -euo pipefail
           if [ -z "${MACOS_CERT_P12_BASE64:-}" ]; then
@@ -124,24 +125,36 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN" \
             $(security list-keychains -d user | tr -d '"')
 
-          # `security find-identity -v` hides anything flagged
-          # CSSMERR_TP_NOT_TRUSTED, which a freshly imported self-signed cert
-          # always is. Trusting our own root on this ephemeral runner keeps the
-          # identity discoverable. End-user Macs need no such trust: signature
-          # checking uses implicit anchors, so the embedded self-signed root
-          # validates on a machine that has never seen it.
-          security find-certificate -c "$LEAF_CN" -p "$KEYCHAIN" > "$ROOT" || true
-          sudo security add-trusted-cert -d -r trustRoot -p codeSign \
-            -k /Library/Keychains/System.keychain "$ROOT" \
-            || echo "::warning::add-trusted-cert failed; identityValidation is off so signing can still proceed"
+          for cn in "$LEAF_CN" "$ROOT_CN"; do
+            if ! security find-certificate -c "$cn" "$KEYCHAIN" >/dev/null 2>&1; then
+              echo "::error::certificate '$cn' missing after import -- is the root bundled in the .p12?"
+              exit 1
+            fi
+          done
 
-          if ! security find-certificate -c "$LEAF_CN" "$KEYCHAIN" >/dev/null 2>&1; then
-            echo "::error::leaf certificate '$LEAF_CN' not found after import"
+          # Trust our own ROOT (not the leaf: add-trusted-cert -r trustRoot on a
+          # CA:false cert fails with SecTrustSettingsSetTrustSettings "parameters
+          # not valid"). Two things need this:
+          #   - codesign sets kCMSCertificateChainWithRootOrFail, so it must be
+          #     able to build and embed the chain up to the root, or it dies with
+          #     errSecInternalComponent on the first file it signs
+          #   - `security find-identity -v` hides anything CSSMERR_TP_NOT_TRUSTED
+          # Only the build machine needs this. End-user Macs never see the cert:
+          # signature checking uses implicit anchors, so the embedded self-signed
+          # root validates on a machine that has never encountered it.
+          security find-certificate -c "$ROOT_CN" -p "$KEYCHAIN" > "$ROOT"
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign \
+            -k /Library/Keychains/System.keychain "$ROOT"
+
+          # A trusted root is what makes the identity valid, and an invalid
+          # identity means codesign cannot build its chain -- so this is fatal,
+          # not informational.
+          if ! security find-identity -v -p codesigning "$KEYCHAIN" | grep -q "$LEAF_CN"; then
+            echo "::error::'$LEAF_CN' is not a valid codesigning identity after trusting the root"
+            security find-identity -v -p codesigning "$KEYCHAIN" || true
             exit 1
           fi
-          # informational: empty here means a trust problem, but signing still
-          # works because forge sets identityValidation:false
-          security find-identity -v -p codesigning "$KEYCHAIN" || true
+          security find-identity -v -p codesigning "$KEYCHAIN"
 
           {
             echo "MACOS_SIGN_IDENTITY=$LEAF_CN"
